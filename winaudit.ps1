@@ -3,21 +3,17 @@
   Stable Windows audit script for Windows Server 2022+ (PowerShell)
 
 .DESCRIPTION
-  - Uses modern CIM/WMI (Get-CimInstance, Get-Service) instead of deprecated WMIC
-  - Adds timeout protection for slow commands (Start-Job + Wait-Job)
-  - Exports scheduled tasks to a file
-  - Logs to transcript file when possible
-  - Native PowerShell registry queries
-  - ENV section uses Get-ChildItem Env: to list environment variables
-  - UPDATE section checks hotfixes, Windows Update service, pending reboot indicators
+  - Uses CIM/WMI instead of deprecated WMIC
+  - Timeout protection for slow commands
+  - Exports scheduled tasks
+  - Transcript logging
+  - Full environment dump (Get-ChildItem Env:)
+  - PowerShell command history check (Get-History + history file read)
+  - Hotfix/update info and pending reboot indicators
 
 .USAGE
   .\winaudit.ps1
   .\winaudit.ps1 -OutLog "C:\Temp\audit.log" -SchtasksFile "C:\Temp\schtasks.txt" -TimeoutSeconds 20
-
-.NOTES
-  - Run as Administrator for full results
-  - Compatible with Windows PowerShell 5.1 / PowerShell 7+
 #>
 
 param(
@@ -53,19 +49,12 @@ function Header {
 }
 
 function RunCommand {
-    param(
-        [Parameter(Mandatory=$true)][string]$Cmd,
-        [object[]]$Args = @()
-    )
+    param([Parameter(Mandatory=$true)][string]$Cmd,[object[]]$Args=@())
     try { & $Cmd @Args 2>&1 } catch { Write-Output ("Command {0} failed: {1}" -f $Cmd, $_) }
 }
 
 function RunCommandWithTimeout {
-    param(
-        [Parameter(Mandatory=$true)][string]$Cmd,
-        [object[]]$Args = @(),
-        [int]$Timeout = 20
-    )
+    param([Parameter(Mandatory=$true)][string]$Cmd,[object[]]$Args=@(),[int]$Timeout=20)
     try {
         $job = Start-Job -ScriptBlock { param($c,$a) & $c @a 2>&1 } -ArgumentList $Cmd,$Args
         if (Wait-Job $job -Timeout $Timeout) {
@@ -73,35 +62,13 @@ function RunCommandWithTimeout {
             Remove-Job $job -Force -ErrorAction SilentlyContinue
             return $out
         } else {
-            Write-Warning ("Command timed out after {0}s: {1} {2}" -f $Timeout, $Cmd, ($Args -join ' '))
+            Write-Warning ("Command timed out after {0}s: {1} {2}" -f $Timeout,$Cmd,($Args -join ' '))
             Stop-Job $job -Force -ErrorAction SilentlyContinue
             Remove-Job $job -Force -ErrorAction SilentlyContinue
             return @("<<TIMED OUT>>")
         }
     } catch {
         Write-Output ("RunCommandWithTimeout error: {0}" -f $_)
-    }
-}
-
-function RunBlockWithTimeout {
-    param(
-        [Parameter(Mandatory=$true)][scriptblock]$Script,
-        [int]$Timeout = 20
-    )
-    try {
-        $job = Start-Job -ScriptBlock $Script
-        if (Wait-Job $job -Timeout $Timeout) {
-            $out = Receive-Job $job -ErrorAction SilentlyContinue
-            Remove-Job $job -Force -ErrorAction SilentlyContinue
-            return $out
-        } else {
-            Write-Warning ("Script block timed out after {0}s" -f $Timeout)
-            Stop-Job $job -Force -ErrorAction SilentlyContinue
-            Remove-Job $job -Force -ErrorAction SilentlyContinue
-            return @("<<TIMED OUT>>")
-        }
-    } catch {
-        Write-Output ("RunBlockWithTimeout error: {0}" -f $_)
     }
 }
 
@@ -122,84 +89,47 @@ Header "SYSTEM INFO"
 RunCommand "systeminfo.exe"
 
 Header "OS INFO (Caption, CSDVersion, OSArchitecture, Version)"
-RunBlockWithTimeout -Timeout $TimeoutSeconds -Script {
-    Get-CimInstance Win32_OperatingSystem |
-        Select-Object Caption, CSDVersion, OSArchitecture, Version |
-        Format-List
-}
+Get-CimInstance Win32_OperatingSystem | Select-Object Caption, CSDVersion, OSArchitecture, Version | Format-List
 
-Header "ENVIRONMENT"
+Header "ENVIRONMENT (Get-ChildItem Env:)"
 try {
-    Write-Output "`n-- Full environment variables (Get-ChildItem Env:) --"
-    # Full environment dump (may be large)
     Get-ChildItem Env: | Sort-Object Name | Format-Table -AutoSize
-
     Write-Output "`n-- PATH entries (first 40) --"
-    $pathEntries = ($env:Path -split ';') -ne ''
-    $pathEntries[0..([math]::Min(39,$pathEntries.Count-1))] | ForEach-Object { Write-Output $_ }
-
+    ($env:Path -split ';')[0..([math]::Min(39,($env:Path -split ';').Count-1))] | ForEach-Object { Write-Output $_ }
     Write-Output "`n-- PSModulePath entries --"
-    $psmod = $env:PSModulePath -split ';'
-    $psmod | ForEach-Object { Write-Output $_ }
-
+    ($env:PSModulePath -split ';') | ForEach-Object { Write-Output $_ }
     Write-Output "`n-- PowerShell version table --"
     $PSVersionTable | Format-List
-
-    Write-Output "`n-- Selected common env vars --"
-    $vars = @("USERNAME","USERDOMAIN","USERPROFILE","ALLUSERSPROFILE","ProgramFiles","ProgramFiles(x86)","TEMP","TMP","COMSPEC","WINDIR")
-    foreach ($v in $vars) {
-        $val = (Get-Item -Path env:$v -ErrorAction SilentlyContinue).Value
-        Write-Output ("{0} = {1}" -f $v, $val)
-    }
-
-    Write-Output "`n-- Installed PowerShell modules (available) --"
-    Get-Module -ListAvailable | Select-Object Name, Version | Sort-Object Name | Format-Table -AutoSize
-
-    Write-Output "`n-- Installed applications (first 60 from Uninstall keys) --"
-    $uninst = @()
-    $keys = @(
-        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
-        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
-        "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
-    )
-    foreach ($k in $keys) {
-        try {
-            Get-ChildItem -Path $k -ErrorAction SilentlyContinue | ForEach-Object {
-                try {
-                    $p = Get-ItemProperty -Path $_.PSPath -ErrorAction SilentlyContinue
-                    if ($p.DisplayName) {
-                        $uninst += [PSCustomObject]@{
-                            DisplayName = $p.DisplayName
-                            DisplayVersion = $p.DisplayVersion
-                            Publisher = $p.Publisher
-                            InstallDate = $p.InstallDate
-                        }
-                    }
-                } catch {}
-            }
-        } catch {}
-    }
-    $uninst | Sort-Object DisplayName | Select-Object -First 60 | Format-Table -AutoSize
 } catch {
     Write-Output ("Environment section failed: {0}" -f $_)
 }
 
-Header "SERVICES (Name, StartName, State)"
+Header "POWERSHELL HISTORY"
 try {
-    $svc = RunBlockWithTimeout -Timeout $TimeoutSeconds -Script {
-        Get-CimInstance Win32_Service | Select-Object Name, StartName, State
-    }
-    if ($svc -is [array] -and $svc -contains "<<TIMED OUT>>") {
-        Write-Warning "Service enumeration timed out; using Get-Service fallback."
-        Get-Service | Select-Object Name, Status, ServiceType, StartType | Format-Table -AutoSize
+    Write-Output "`n-- Current session history (Get-History) --"
+    Get-History | Select-Object Id, CommandLine | Format-Table -AutoSize
+
+    Write-Output "`n-- Persistent PSReadLine history file (if available) --"
+    $historyPath = (Get-PSReadLineOption).HistorySavePath
+    if (Test-Path $historyPath) {
+        $lines = Get-Content $historyPath -ErrorAction SilentlyContinue
+        Write-Output ("History file: {0}" -f $historyPath)
+        Write-Output ("Total lines: {0}" -f $lines.Count)
+        Write-Output "`nLast 30 commands:"
+        $lines | Select-Object -Last 30 | ForEach-Object { Write-Output $_ }
     } else {
-        $svc | Format-Table -AutoSize
-        $svcCount = ($svc | Measure-Object).Count
-        Write-Output ("`n(Total services enumerated: {0})" -f $svcCount)
+        Write-Output "No PSReadLine history file found."
     }
 } catch {
-    Write-Output ("Service enumeration failed: {0}" -f $_)
+    Write-Output ("History check failed: {0}" -f $_)
 }
+
+Header "SERVICES (Name, StartName, State)"
+try {
+    $svc = Get-CimInstance Win32_Service | Select-Object Name, StartName, State
+    $svc | Format-Table -AutoSize
+    Write-Output ("`n(Total services enumerated: {0})" -f ($svc | Measure-Object).Count)
+} catch { Write-Output ("Service enumeration failed: {0}" -f $_) }
 
 Header "NET START (running services)"
 RunCommandWithTimeout "net.exe" @("start") $TimeoutSeconds
@@ -221,19 +151,10 @@ RunCommandWithTimeout "ipconfig.exe" @("/all")  $TimeoutSeconds
 
 Header "USER DETAILS (Win32_UserAccount)"
 try {
-    Write-Output "`nLocal user accounts (CIM query)"
-    $users = RunBlockWithTimeout -Timeout $TimeoutSeconds -Script {
-        Get-CimInstance -ClassName Win32_UserAccount -Filter "LocalAccount=True" |
-            Select-Object Name, FullName, Disabled, Lockout, PasswordChangeable, PasswordRequired
-    }
-    if ($users -is [array] -and $users -contains "<<TIMED OUT>>") {
-        Write-Warning "User account enumeration timed out."
-    } else {
-        $users | Format-Table -AutoSize
-    }
-} catch {
-    Write-Output ("User enumeration failed: {0}" -f $_)
-}
+    Get-CimInstance -ClassName Win32_UserAccount -Filter "LocalAccount=True" |
+        Select-Object Name, FullName, Disabled, Lockout, PasswordChangeable, PasswordRequired |
+        Format-Table -AutoSize
+} catch { Write-Output ("User enumeration failed: {0}" -f $_) }
 
 Header "FIREWALL RULES"
 RunCommandWithTimeout "netsh.exe" @("advfirewall","firewall","show","rule","name=all") $TimeoutSeconds
@@ -254,83 +175,42 @@ try {
 Header "UPDATE / PATCH STATUS"
 try {
     Write-Output "`n-- Installed hotfixes (QuickFixEngineering) --"
-    $hotfixes = RunBlockWithTimeout -Timeout $TimeoutSeconds -Script {
-        Get-CimInstance Win32_QuickFixEngineering | Select-Object HotFixID, Description, InstalledOn
-    }
-    if ($hotfixes -is [array] -and $hotfixes -contains "<<TIMED OUT>>") {
-        Write-Warning "Hotfix enumeration timed out."
-    } else {
-        $hotfixes | Sort-Object InstalledOn -Descending | Select-Object -First 40 | Format-Table -AutoSize
-    }
+    Get-CimInstance Win32_QuickFixEngineering | Sort-Object InstalledOn -Descending |
+        Select-Object -First 40 HotFixID, Description, InstalledOn | Format-Table -AutoSize
 
     Write-Output "`n-- Windows Update service (wuauserv) status --"
-    try {
-        Get-Service -Name wuauserv -ErrorAction SilentlyContinue | Select-Object Name, Status, StartType, DisplayName | Format-List
-    } catch {
-        Write-Output "Could not query wuauserv: $_"
-    }
+    Get-Service -Name wuauserv -ErrorAction SilentlyContinue |
+        Select-Object Name, Status, StartType, DisplayName | Format-List
 
     Write-Output "`n-- Pending reboot indicators --"
     $pending = @{
-        CBS = $false
+        CBS = (Test-Path "C:\Windows\WinSxS\pending.xml")
         Registry = $false
     }
-    $pending.CBS = Test-Path "C:\Windows\WinSxS\pending.xml"
-    try {
-        $regKeys = @(
-            "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending",
-            "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired",
-            "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\PendingFileRenameOperations"
-        )
-        foreach ($k in $regKeys) {
-            if (Test-Path $k) { $pending.Registry = $true }
-        }
-    } catch {}
+    $regKeys = @(
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending",
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired",
+        "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\PendingFileRenameOperations"
+    )
+    foreach ($k in $regKeys) { if (Test-Path $k) { $pending.Registry = $true } }
     Write-Output ("CBS pending.xml exists: {0}" -f $pending.CBS)
     Write-Output ("Registry indicates reboot required: {0}" -f $pending.Registry)
-
-    Write-Output "`n-- Windows Update client last results (if available) --"
-    try {
-        $wu = New-Object -ComObject "Microsoft.Update.Session" -ErrorAction SilentlyContinue
-        if ($wu) {
-            $searcher = $wu.CreateUpdateSearcher()
-            $historyCount = $searcher.GetTotalHistoryCount()
-            Write-Output ("Update history entries: {0}" -f $historyCount)
-            if ($historyCount -gt 0) {
-                $hist = $searcher.QueryHistory(0, [math]::Min(20, $historyCount))
-                $hist | Select-Object Date, Title, ResultCode | Format-Table -AutoSize
-            }
-        } else {
-            Write-Output "Windows Update COM object not available in this session."
-        }
-    } catch {
-        Write-Output ("Windows Update client query failed: {0}" -f $_)
-    }
-} catch {
-    Write-Output ("Update section failed: {0}" -f $_)
-}
+} catch { Write-Output ("Update section failed: {0}" -f $_) }
 
 Header "INSTALLATION RIGHTS (AlwaysInstallElevated)"
 try {
     $hkcu = Get-ItemProperty -Path "HKCU:\Software\Policies\Microsoft\Windows\Installer" -ErrorAction SilentlyContinue
     $hklm = Get-ItemProperty -Path "HKLM:\Software\Policies\Microsoft\Windows\Installer" -ErrorAction SilentlyContinue
-
     Write-Output ("HKCU AlwaysInstallElevated: {0}" -f $($hkcu.AlwaysInstallElevated))
     Write-Output ("HKLM AlwaysInstallElevated: {0}" -f $($hklm.AlwaysInstallElevated))
-} catch {
-    Write-Output ("Registry query failed: {0}" -f $_)
-}
+} catch { Write-Output ("Registry query failed: {0}" -f $_) }
 
 # ---------------------------
 # Wrap-up
 # ---------------------------
 try {
-    if (Get-Command Stop-Transcript -ErrorAction SilentlyContinue) {
-        Stop-Transcript | Out-Null
-    }
-} catch {
-    Write-Warning ("Could not stop transcript cleanly: {0}" -f $_)
-}
+    if (Get-Command Stop-Transcript -ErrorAction SilentlyContinue) { Stop-Transcript | Out-Null }
+} catch { Write-Warning ("Could not stop transcript cleanly: {0}" -f $_) }
 
 Write-Output ""
 Write-Output ("Audit complete. Primary log: {0}" -f $OutLog)
