@@ -20,6 +20,9 @@ param(
     [string]$OutLog = ".\audit_output.txt",
     [string]$SchtasksFile = ".\schtasks.txt",
     [int]$TimeoutSeconds = 20
+    ,[int]$RegContextBefore = 60
+    ,[int]$RegContextAfter = 60
+    ,[switch]$RegSafeMode
 )
 
 # ---------------------------
@@ -71,6 +74,29 @@ function RunCommandWithTimeout {
         Write-Output ("RunCommandWithTimeout error: {0}" -f $_)
     }
 }
+
+# ---------------------------
+# Registry helper utilities
+# ---------------------------
+function Normalize-RegistryValueToString {
+    param([object]$Value)
+    if ($Value -is [byte[]]) {
+        return ($Value | ForEach-Object { $_.ToString('X2') }) -join ''
+    } elseif ($Value -is [System.Array]) {
+        return ($Value -join '|')
+    } else {
+        return [string]$Value
+    }
+}
+
+function Get-Snippet {
+    param([string]$Text,[int]$Index,[int]$LengthBefore=60,[int]$LengthAfter=60)
+    $start = [math]::Max(0, $Index - $LengthBefore)
+    $len = [math]::Min($LengthBefore + $LengthAfter + 0, [math]::Max(0, $Text.Length - $start))
+    if ($len -le 0) { return "" }
+    return $Text.Substring($start, [math]::Min($len, $Text.Length - $start))
+}
+
 
 # ---------------------------
 # REPORT
@@ -539,6 +565,90 @@ foreach ($searchPath in $vcsSearchPaths) {
             }
         }
     } catch { }
+}
+
+## ---------------------------
+## REGISTRY KEYS & VALUES CHECK (refactored)
+## ---------------------------
+Header "REGISTRY KEYS & VALUES"
+
+# Paths to inspect (can be expanded)
+$regPaths = @(
+    'HKLM:\SOFTWARE',
+    'HKCU:\SOFTWARE',
+    'HKLM:\SYSTEM\CurrentControlSet\Services',
+    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run',
+    'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run',
+    'HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Run'
+)
+
+# value/data patterns that often indicate credentials or secrets
+$regValuePatterns = @('password','pwd','pass','secret','apikey','token','connectionstring','cpassword','pw',':pw')
+
+function Search-RegistryPath {
+    param(
+        [string]$Path,
+        [string[]]$Patterns,
+        [int]$ContextBefore = $script:RegContextBefore,
+        [int]$ContextAfter = $script:RegContextAfter,
+        [switch]$SafeMode
+    )
+
+    Write-Output ("Scanning registry path: {0}" -f $Path)
+    $keys = Get-ChildItem -Path $Path -ErrorAction SilentlyContinue -Force
+    foreach ($k in $keys) {
+        # gather value names
+        $vals = @()
+        try {
+            $vals = Get-ItemProperty -Path $k.PSPath -ErrorAction SilentlyContinue | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name -ErrorAction SilentlyContinue
+        } catch { }
+
+        foreach ($vn in $vals) {
+            try {
+                $vraw = (Get-ItemProperty -Path $k.PSPath -Name $vn -ErrorAction SilentlyContinue).$vn
+            } catch { $vraw = $null }
+
+            if ($vraw -ne $null) {
+                $vstr = Normalize-RegistryValueToString -Value $vraw
+
+                foreach ($pat in $Patterns) {
+                    $match = $null
+                    try { $match = [regex]::Match($vstr, $pat, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase) } catch { $match = $null }
+
+                    if ($match -and $match.Success) {
+                        if ($SafeMode) {
+                            Write-Output ("FOUND REG VALUE match: Key={0} ValueName={1} Pattern={2} (safe mode: snippet suppressed)" -f $k.PSPath, $vn, $pat)
+                        } else {
+                            $snippet = Get-Snippet -Text $vstr -Index $match.Index -LengthBefore $ContextBefore -LengthAfter $ContextAfter
+                            $escaped = [regex]::Escape($match.Value)
+                            $snippetMarked = $snippet -replace $escaped, "<<<$($match.Value)>>>", 1
+                            Write-Output ("FOUND REG VALUE match: Key={0} ValueName={1} Pattern={2} Snippet={3}" -f $k.PSPath, $vn, $pat, $snippetMarked)
+                        }
+                    } elseif ($vn -match $pat) {
+                        Write-Output ("FOUND REG VALUE NAME match: Key={0} ValueName={1} Pattern={2}" -f $k.PSPath, $vn, $pat)
+                    }
+                }
+            }
+        }
+
+        # check ACLs
+        try {
+            $acl = Get-Acl -Path $k.PSPath -ErrorAction SilentlyContinue
+            if ($acl) {
+                foreach ($ace in $acl.Access) {
+                    if ($ace.IdentityReference -match 'Everyone|Users|Authenticated Users') {
+                        if ($ace.RegistryRights -match 'SetValue|CreateSubKey|FullControl') {
+                            Write-Output ("WEAK REG ACL: {0} -> {1} : {2}" -f $k.PSPath, $ace.IdentityReference, $ace.RegistryRights)
+                        }
+                    }
+                }
+            }
+        } catch { }
+    }
+}
+
+foreach ($r in $regPaths) {
+    try { Search-RegistryPath -Path $r -Patterns $regValuePatterns -ContextBefore $RegContextBefore -ContextAfter $RegContextAfter -SafeMode:$RegSafeMode } catch { Write-Output ("Could not enumerate registry path: {0}" -f $r) }
 }
 
 try {
