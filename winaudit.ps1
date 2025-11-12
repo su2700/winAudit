@@ -208,6 +208,148 @@ try {
 # ---------------------------
 # Wrap-up
 # ---------------------------
+# ---------------------------
+# CHECK FILES (selected sensitive/common files)
+# ---------------------------
+Header "CHECK FILES (selected sensitive/common files)"
+
+$checkPaths = @(
+    "C:/Users/Administrator/NTUser.dat",
+    "C:/Documents and Settings/Administrator/NTUser.dat",
+    "C:/apache/logs/access.log",
+    "C:/apache/logs/error.log",
+    "C:/apache/php/php.ini",
+    "C:/boot.ini",
+    "C:/inetpub/wwwroot/global.asa",
+    "C:/MySQL/data/hostname.err",
+    "C:/MySQL/data/mysql.err",
+    "C:/MySQL/data/mysql.log",
+    "C:/MySQL/my.cnf",
+    "C:/MySQL/my.ini",
+    "C:/php4/php.ini",
+    "C:/php5/php.ini",
+    "C:/php/php.ini",
+    "C:/Program Files/Apache Group/Apache2/conf/httpd.conf",
+    "C:/Program Files/Apache Group/Apache/conf/httpd.conf",
+    "C:/Program Files/Apache Group/Apache/logs/access.log",
+    "C:/Program Files/Apache Group/Apache/logs/error.log",
+    "C:/Program Files/FileZilla Server/FileZilla Server.xml",
+    "C:/Program Files/MySQL/data/hostname.err",
+    "C:/Program Files/MySQL/data/mysql-bin.log",
+    "C:/Program Files/MySQL/data/mysql.err",
+    "C:/Program Files/MySQL/data/mysql.log",
+    "C:/Program Files/MySQL/my.ini",
+    "C:/Program Files/MySQL/my.cnf",
+    "C:/Program Files/MySQL/MySQL Server 5.0/data/hostname.err",
+    "C:/Program Files/MySQL/MySQL Server 5.0/data/mysql-bin.log",
+    "C:/Program Files/MySQL/MySQL Server 5.0/data/mysql.err",
+    "C:/Program Files/MySQL/MySQL Server 5.0/data/mysql.log",
+    "C:/Program Files/MySQL/MySQL Server 5.0/my.cnf",
+    "C:/Program Files/MySQL/MySQL Server 5.0/my.ini",
+    "C:/Program Files (x86)/Apache Group/Apache2/conf/httpd.conf",
+    "C:/Program Files (x86)/Apache Group/Apache/conf/httpd.conf",
+    "C:/Program Files (x86)/Apache Group/Apache/conf/access.log",
+    "C:/Program Files (x86)/Apache Group/Apache/conf/error.log",
+    "C:/Program Files (x86)/FileZilla Server/FileZilla Server.xml",
+    "C:/Program Files (x86)/xampp/apache/conf/httpd.conf",
+    "C:/WINDOWS/php.ini",
+    "C:/WINDOWS/Repair/SAM",
+    "C:/Windows/repair/system",
+    "C:/Windows/repair/software",
+    "C:/Windows/repair/security",
+    "C:/WINDOWS/System32/drivers/etc/hosts",
+    "C:/Windows/win.ini",
+    "C:/WINNT/php.ini",
+    "C:/WINNT/win.ini",
+    "C:/xampp/apache/bin/php.ini",
+    "C:/xampp/apache/logs/access.log",
+    "C:/xampp/apache/logs/error.log",
+    "C:/Windows/Panther/Unattend/Unattended.xml",
+    "C:/Windows/Panther/Unattended.xml",
+    "C:/Windows/debug/NetSetup.log",
+    "C:/Windows/system32/config/AppEvent.Evt",
+    "C:/Windows/system32/config/SecEvent.Evt",
+    "C:/Windows/system32/config/default.sav",
+    "C:/Windows/system32/config/security.sav",
+    "C:/Windows/system32/config/software.sav",
+    "C:/Windows/system32/config/system.sav",
+    "C:/Windows/system32/config/regback/default",
+    "C:/Windows/system32/config/regback/sam",
+    "C:/Windows/system32/config/regback/security",
+    "C:/Windows/system32/config/regback/system",
+    "C:/Windows/system32/config/regback/software",
+    "C:/Program Files/MySQL/MySQL Server 5.1/my.ini",
+    "C:/Windows/System32/inetsrv/config/schema/ASPNET_schema.xml",
+    "C:/Windows/System32/inetsrv/config/applicationHost.config",
+    "C:/inetpub/logs/LogFiles/W3SVC1/u_ex[YYMMDD].log"
+)
+
+foreach ($p in $checkPaths) {
+    $orig = $p
+    # Normalize slashes to backslashes for Windows PowerShell
+    $pNorm = $p -replace '/', '\\'
+    # Treat the placeholder [YYMMDD] as a wildcard
+    $pNorm = $pNorm -replace '\[YYMMDD\]', '*'
+
+    # If the path contains wildcards, allow Get-ChildItem to expand them
+    try {
+        $matches = Get-ChildItem -Path $pNorm -ErrorAction SilentlyContinue -Force
+    } catch {
+        $matches = @()
+    }
+
+    if (-not $matches -or $matches.Count -eq 0) {
+        Write-Output ("NOT FOUND: {0}" -f $orig)
+    } else {
+        # safety limits for content output
+        $MaxLines = 200
+        $MaxBytes = 100 * 1024  # 100 KiB
+        $sensitivePatterns = @(
+            '\\Windows\\system32\\config\\SAM$',
+            '\\Windows\\system32\\config\\SYSTEM$',
+            '\\Windows\\system32\\config\\security$',
+            '\\Windows\\system32\\config\\software$',
+            '\\Windows\\system32\\config\\system$',
+            '\\Windows\\Repair\\SAM$'
+        )
+
+        foreach ($m in $matches) {
+            if ($m -is [System.IO.FileInfo]) {
+                $full = $m.FullName
+                Write-Output ("FOUND: {0} (File) Size={1} LastWrite={2}" -f $full,$m.Length,$m.LastWriteTime)
+
+                # mark if file matches known sensitive hive patterns (we will still print contents)
+                $isSensitive = $false
+                foreach ($pat in $sensitivePatterns) { if ($full -match $pat) { $isSensitive = $true; break } }
+                if ($isSensitive) {
+                    Write-Output ("NOTE: Sensitive file pattern matched; printing contents anyway: {0}" -f $full)
+                }
+
+                try {
+                    if ($m.Length -le $MaxBytes) {
+                        Write-Output ("`n--- BEGIN FILE: {0} ---" -f $full)
+                        # small file: print entire content
+                        Get-Content -Path $full -ErrorAction SilentlyContinue -Raw | ForEach-Object { Write-Output $_ }
+                        Write-Output ("--- END FILE: {0} ---`n" -f $full)
+                    } else {
+                        Write-Output ("`n--- BEGIN FILE (truncated): {0} (first {1} lines) ---" -f $full,$MaxLines)
+                        Get-Content -Path $full -ErrorAction SilentlyContinue -TotalCount $MaxLines | ForEach-Object { Write-Output $_ }
+                        Write-Output ("--- OUTPUT TRUNCATED (size {0} bytes > {1} bytes) ---" -f $m.Length,$MaxBytes)
+                        Write-Output ("--- END FILE: {0} ---`n" -f $full)
+                    }
+                } catch {
+                    Write-Output ("Could not read file content: {0}" -f $_)
+                }
+
+            } elseif ($m -is [System.IO.DirectoryInfo]) {
+                Write-Output ("FOUND: {0} (Directory)" -f $m.FullName)
+            } else {
+                Write-Output ("FOUND (other): {0}" -f $m.FullName)
+            }
+        }
+    }
+}
+
 try {
     if (Get-Command Stop-Transcript -ErrorAction SilentlyContinue) { Stop-Transcript | Out-Null }
 } catch { Write-Warning ("Could not stop transcript cleanly: {0}" -f $_) }
