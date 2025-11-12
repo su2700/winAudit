@@ -374,7 +374,7 @@ foreach ($pattern in $credConfigFiles) {
             $content = Get-Content -Path $f.FullName -ErrorAction SilentlyContinue -Raw
             if ($content) {
                 if ($content -match '(?i)password\s*=|(?i)apikey|(?i)secret\s*=|(?i)token\s*=') {
-                    Write-Output ("[RED] FOUND potential credentials in: {0}" -f $f.FullName)
+                    Write-Host "[ALERT] FOUND potential credentials in: $($f.FullName)" -ForegroundColor Red
                 }
             }
         }
@@ -398,7 +398,7 @@ foreach ($dbPath in $dbPaths) {
             $content = Get-Content -Path $f.FullName -ErrorAction SilentlyContinue -Raw
             if ($content -match '(?i)server\s*=|(?i)host\s*=') {
                 if ($content -match '(?i)user|(?i)password|(?i)pwd') {
-                    Write-Output ("[RED] FOUND database connection string in: {0}" -f $f.FullName)
+                    Write-Host "[ALERT] FOUND database connection string in: $($f.FullName)" -ForegroundColor Red
                 }
             }
         }
@@ -420,7 +420,7 @@ foreach ($loc in $keyLocations) {
         $files = Get-ChildItem -Path $loc -ErrorAction SilentlyContinue -Force -File 2>$null
         foreach ($f in $files) {
             if ($keyExtensions -contains $f.Extension) {
-                Write-Output ("[RED] FOUND PRIVATE KEY: {0} (Size: {1} bytes)" -f $f.FullName, $f.Length)
+                Write-Host "[ALERT] FOUND PRIVATE KEY: $($f.FullName) (Size: $($f.Length) bytes)" -ForegroundColor Red
             }
         }
     } catch { }
@@ -438,7 +438,7 @@ foreach ($gppPath in $gppPaths) {
         foreach ($xml in $xmlFiles) {
             $content = Get-Content -Path $xml.FullName -ErrorAction SilentlyContinue -Raw
             if ($content -match 'cpassword') {
-                Write-Output ("[RED] FOUND cpassword in GPP XML: {0}" -f $xml.FullName)
+                Write-Host "[ALERT] FOUND cpassword in GPP XML: $($xml.FullName)" -ForegroundColor Red
             }
         }
     } catch { }
@@ -448,7 +448,7 @@ Write-Output "`n=== 5. WINDOWS CREDENTIAL MANAGER SAVED CREDENTIALS ==="
 try {
     $creds = cmdkey /list 2>$null | Select-String "Target"
     if ($creds) {
-        Write-Output ("[YELLOW] Stored credentials found in Credential Manager:")
+        Write-Host "[WARNING] Stored credentials found in Credential Manager:" -ForegroundColor Yellow
         $creds | ForEach-Object { Write-Output ("  {0}" -f $_) }
     } else {
         Write-Output "No stored credentials in Credential Manager."
@@ -468,7 +468,7 @@ foreach ($rdpPath in $rdpPaths) {
     try {
         $rdpFiles = Get-ChildItem -Path $rdpPath -ErrorAction SilentlyContinue -Force -File 2>$null
         foreach ($rdp in $rdpFiles) {
-            Write-Output ("[RED] FOUND RDP file (may contain saved credentials): {0}" -f $rdp.FullName)
+            Write-Host "[ALERT] FOUND RDP file (may contain saved credentials): $($rdp.FullName)" -ForegroundColor Red
         }
     } catch { }
 }
@@ -477,7 +477,7 @@ Write-Output "`n=== 7. SERVICE ACCOUNT CREDENTIALS ==="
 try {
     $services = Get-WmiObject win32_service -ErrorAction SilentlyContinue | Where-Object { $_.StartName -and $_.StartName -notmatch "NT AUTHORITY" -and $_.StartName -ne "LocalSystem" }
     if ($services) {
-        Write-Output "[YELLOW] Services running under non-system accounts:"
+        Write-Host "[WARNING] Services running under non-system accounts:" -ForegroundColor Yellow
         foreach ($svc in $services) { Write-Output ("  {0}: {1}" -f $svc.Name, $svc.StartName) }
     }
 } catch {
@@ -504,7 +504,7 @@ foreach ($path in $sensitiveWritablePaths) {
                 }
             }
             if ($hasWeakAcl) {
-                Write-Output ("[RED] WEAK ACL FOUND on {0}" -f $path)
+                Write-Host "[ALERT] WEAK ACL FOUND on $path" -ForegroundColor Red
             }
         }
     } catch { }
@@ -514,7 +514,7 @@ Write-Output "`n=== 9. UNQUOTED SERVICE PATHS ==="
 try {
     $unrequotedServices = Get-WmiObject win32_service -ErrorAction SilentlyContinue | Where-Object { $_.PathName -notmatch '^\s*"' -and $_.PathName -match '\s' }
     if ($unrequotedServices) {
-        Write-Output "[RED] Services with unquoted paths (potential DLL injection/path hijacking):"
+        Write-Host "[ALERT] Services with unquoted paths (potential DLL injection/path hijacking):" -ForegroundColor Red
         foreach ($svc in $unrequotedServices) { Write-Output ("  {0}: {1}" -f $svc.Name, $svc.PathName) }
     }
 } catch {
@@ -535,7 +535,7 @@ foreach ($searchPath in $vcsSearchPaths) {
         $items = Get-ChildItem -Path $searchPath -ErrorAction SilentlyContinue -Force 2>$null
         foreach ($item in $items) {
             if ($vcsArtifacts -contains $item.Extension -or $item.Name -match "backup|old") {
-                Write-Output ("[YELLOW] Version control/backup artifact: {0}" -f $item.FullName)
+                Write-Host "[INFO] Version control/backup artifact: $($item.FullName)" -ForegroundColor Yellow
             }
         }
     } catch { }
