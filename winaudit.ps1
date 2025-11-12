@@ -350,6 +350,197 @@ foreach ($p in $checkPaths) {
     }
 }
 
+# ---------------------------
+# CREDENTIALS SECRETS SCAN
+# ---------------------------
+Header "CREDENTIALS AND SECRETS (Plaintext creds, keys, weak ACLs)"
+
+Write-Output "`n=== 1. PLAINTEXT CREDENTIALS IN CONFIG FILES ==="
+$credConfigFiles = @(
+    "C:\*.env",
+    "C:\*.config",
+    "C:\web.config",
+    "C:\appsettings.json",
+    "C:\connections.xml",
+    "C:\Program Files\*\*.config",
+    "C:\Program Files\*\*.ini",
+    "C:\ProgramData\*\*.xml"
+)
+
+foreach ($pattern in $credConfigFiles) {
+    try {
+        $files = Get-ChildItem -Path $pattern -ErrorAction SilentlyContinue -Force -File 2>$null
+        foreach ($f in $files) {
+            $content = Get-Content -Path $f.FullName -ErrorAction SilentlyContinue -Raw
+            if ($content) {
+                if ($content -match '(?i)password\s*=|(?i)apikey|(?i)secret\s*=|(?i)token\s*=') {
+                    Write-Output ("[RED] FOUND potential credentials in: {0}" -f $f.FullName)
+                }
+            }
+        }
+    } catch { }
+}
+
+Write-Output "`n=== 2. DATABASE CONNECTION STRINGS ==="
+$dbPaths = @(
+    "C:\MySQL\my.ini",
+    "C:\MySQL\my.cnf",
+    "C:\Program Files\MySQL\*.ini",
+    "C:\*.xml",
+    "C:\inetpub\wwwroot\web.config",
+    "C:\*.json"
+)
+
+foreach ($dbPath in $dbPaths) {
+    try {
+        $files = Get-ChildItem -Path $dbPath -ErrorAction SilentlyContinue -Force -File 2>$null
+        foreach ($f in $files) {
+            $content = Get-Content -Path $f.FullName -ErrorAction SilentlyContinue -Raw
+            if ($content -match '(?i)server\s*=|(?i)host\s*=') {
+                if ($content -match '(?i)user|(?i)password|(?i)pwd') {
+                    Write-Output ("[RED] FOUND database connection string in: {0}" -f $f.FullName)
+                }
+            }
+        }
+    } catch { }
+}
+
+Write-Output "`n=== 3. PRIVATE KEYS AND CERTIFICATES ==="
+$keyExtensions = @(".pem", ".key", ".ppk", ".pfx", ".p12", ".keystore")
+$keyLocations = @(
+    "C:\Users\*\.ssh\*",
+    "C:\ProgramData\*\*",
+    "C:\Program Files\*\certs\*",
+    "C:\inetpub\*\*.pfx",
+    "C:\Windows\System32\*\*.pfx"
+)
+
+foreach ($loc in $keyLocations) {
+    try {
+        $files = Get-ChildItem -Path $loc -ErrorAction SilentlyContinue -Force -File 2>$null
+        foreach ($f in $files) {
+            if ($keyExtensions -contains $f.Extension) {
+                Write-Output ("[RED] FOUND PRIVATE KEY: {0} (Size: {1} bytes)" -f $f.FullName, $f.Length)
+            }
+        }
+    } catch { }
+}
+
+Write-Output "`n=== 4. GROUP POLICY PREFERENCES CPASSWORD ==="
+$gppPaths = @(
+    "C:\Windows\SYSVOL\*\Policies\*\Machine\Preferences\*\*.xml",
+    "\\*\SYSVOL\*\Policies\*\Machine\Preferences\*\*.xml"
+)
+
+foreach ($gppPath in $gppPaths) {
+    try {
+        $xmlFiles = Get-ChildItem -Path $gppPath -ErrorAction SilentlyContinue -Force -File 2>$null
+        foreach ($xml in $xmlFiles) {
+            $content = Get-Content -Path $xml.FullName -ErrorAction SilentlyContinue -Raw
+            if ($content -match 'cpassword') {
+                Write-Output ("[RED] FOUND cpassword in GPP XML: {0}" -f $xml.FullName)
+            }
+        }
+    } catch { }
+}
+
+Write-Output "`n=== 5. WINDOWS CREDENTIAL MANAGER SAVED CREDENTIALS ==="
+try {
+    $creds = cmdkey /list 2>$null | Select-String "Target"
+    if ($creds) {
+        Write-Output ("[YELLOW] Stored credentials found in Credential Manager:")
+        $creds | ForEach-Object { Write-Output ("  {0}" -f $_) }
+    } else {
+        Write-Output "No stored credentials in Credential Manager."
+    }
+} catch {
+    Write-Output "Could not enumerate Credential Manager (may require elevation)."
+}
+
+Write-Output "`n=== 6. RDP FILES SAVED PASSWORDS ==="
+$rdpPaths = @(
+    "C:\Users\*\Documents\*.rdp",
+    "C:\Users\*\AppData\Local\Microsoft\Terminal Server Client\*",
+    "C:\Users\*\Desktop\*.rdp"
+)
+
+foreach ($rdpPath in $rdpPaths) {
+    try {
+        $rdpFiles = Get-ChildItem -Path $rdpPath -ErrorAction SilentlyContinue -Force -File 2>$null
+        foreach ($rdp in $rdpFiles) {
+            Write-Output ("[RED] FOUND RDP file (may contain saved credentials): {0}" -f $rdp.FullName)
+        }
+    } catch { }
+}
+
+Write-Output "`n=== 7. SERVICE ACCOUNT CREDENTIALS ==="
+try {
+    $services = Get-WmiObject win32_service -ErrorAction SilentlyContinue | Where-Object { $_.StartName -and $_.StartName -notmatch "NT AUTHORITY" -and $_.StartName -ne "LocalSystem" }
+    if ($services) {
+        Write-Output "[YELLOW] Services running under non-system accounts:"
+        foreach ($svc in $services) { Write-Output ("  {0}: {1}" -f $svc.Name, $svc.StartName) }
+    }
+} catch {
+    Write-Output "Could not enumerate service accounts."
+}
+
+Write-Output "`n=== 8. WEAK FILE ACLs WORLD-WRITABLE PATHS ==="
+$sensitiveWritablePaths = @(
+    "C:\Program Files",
+    "C:\Program Files (x86)",
+    "C:\Windows\Tasks",
+    "C:\Windows\System32\drivers\etc"
+)
+
+foreach ($path in $sensitiveWritablePaths) {
+    try {
+        if (Test-Path $path) {
+            $acl = Get-Acl -Path $path -ErrorAction SilentlyContinue
+            $hasWeakAcl = $false
+            foreach ($access in $acl.Access) {
+                if ($access.IdentityReference -match "Everyone|Users" -and $access.FileSystemRights -match "Write|Modify|FullControl") {
+                    $hasWeakAcl = $true
+                    break
+                }
+            }
+            if ($hasWeakAcl) {
+                Write-Output ("[RED] WEAK ACL FOUND on {0}" -f $path)
+            }
+        }
+    } catch { }
+}
+
+Write-Output "`n=== 9. UNQUOTED SERVICE PATHS ==="
+try {
+    $unrequotedServices = Get-WmiObject win32_service -ErrorAction SilentlyContinue | Where-Object { $_.PathName -notmatch '^\s*"' -and $_.PathName -match '\s' }
+    if ($unrequotedServices) {
+        Write-Output "[RED] Services with unquoted paths (potential DLL injection/path hijacking):"
+        foreach ($svc in $unrequotedServices) { Write-Output ("  {0}: {1}" -f $svc.Name, $svc.PathName) }
+    }
+} catch {
+    Write-Output "Could not enumerate unquoted service paths."
+}
+
+Write-Output "`n=== 10. VERSION CONTROL BACKUP ARTIFACTS ==="
+$vcsArtifacts = @(".git", ".svn", ".zip", ".tar", ".gz")
+$vcsSearchPaths = @(
+    "C:\",
+    "C:\inetpub\*",
+    "C:\Users\*\Documents",
+    "C:\Program Files\*"
+)
+
+foreach ($searchPath in $vcsSearchPaths) {
+    try {
+        $items = Get-ChildItem -Path $searchPath -ErrorAction SilentlyContinue -Force 2>$null
+        foreach ($item in $items) {
+            if ($vcsArtifacts -contains $item.Extension -or $item.Name -match "backup|old") {
+                Write-Output ("[YELLOW] Version control/backup artifact: {0}" -f $item.FullName)
+            }
+        }
+    } catch { }
+}
+
 try {
     if (Get-Command Stop-Transcript -ErrorAction SilentlyContinue) { Stop-Transcript | Out-Null }
 } catch { Write-Warning ("Could not stop transcript cleanly: {0}" -f $_) }
