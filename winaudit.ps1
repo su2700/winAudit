@@ -182,9 +182,6 @@ try {
         Format-Table -AutoSize
 } catch { Write-Output ("User enumeration failed: {0}" -f $_) }
 
-Header "FIREWALL RULES"
-RunCommandWithTimeout "netsh.exe" @("advfirewall","firewall","show","rule","name=all") $TimeoutSeconds
-
 Header "SCHEDULED TASKS (exported)"
 try {
     $scht = RunCommandWithTimeout "schtasks.exe" @("/query","/fo","LIST","/v") $TimeoutSeconds
