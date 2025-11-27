@@ -136,15 +136,28 @@ try {
     Get-History | Select-Object Id, CommandLine | Format-Table -AutoSize
 
     Write-Output "`n-- Persistent PSReadLine history file (if available) --"
-    $historyPath = (Get-PSReadLineOption).HistorySavePath
-    if (Test-Path $historyPath) {
-        $lines = Get-Content $historyPath -ErrorAction SilentlyContinue
-        Write-Output ("History file: {0}" -f $historyPath)
+    # Try multiple possible history file locations
+    $historyPaths = @(
+        "$env:APPDATA\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt",
+        (Get-PSReadLineOption).HistorySavePath
+    )
+    
+    $historyFile = $null
+    foreach ($hp in $historyPaths) {
+        if ($hp -and (Test-Path $hp -ErrorAction SilentlyContinue)) {
+            $historyFile = $hp
+            break
+        }
+    }
+    
+    if ($historyFile) {
+        $lines = Get-Content $historyFile -ErrorAction SilentlyContinue
+        Write-Output ("History file: {0}" -f $historyFile)
         Write-Output ("Total lines: {0}" -f $lines.Count)
         Write-Output "`nLast 30 commands:"
         $lines | Select-Object -Last 30 | ForEach-Object { Write-Output $_ }
     } else {
-        Write-Output "No PSReadLine history file found."
+        Write-Output "No PSReadLine history file found at any known location."
     }
 } catch {
     Write-Output ("History check failed: {0}" -f $_)
