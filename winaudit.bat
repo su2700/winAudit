@@ -760,7 +760,11 @@ function Search-RegistryPath {
         # gather value names
         $vals = @()
         try {
-            $vals = Get-ItemProperty -Path $k.PSPath -ErrorAction SilentlyContinue | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name -ErrorAction SilentlyContinue
+            if ($k.PSProvider.Name -eq "Registry") {
+                $vals = $k.GetValueNames()
+            } else {
+                $vals = Get-ItemProperty -Path $k.PSPath -ErrorAction SilentlyContinue | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name -ErrorAction SilentlyContinue | Where-Object { $_ -notmatch '^(PSPath|PSParentPath|PSChildName|PSDrive|PSProvider)$' }
+            }
         } catch { }
 
         foreach ($vn in $vals) {
