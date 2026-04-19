@@ -1,3 +1,29 @@
+<# :
+@echo off
+setlocal
+:: winAudit Standalone Launcher
+:: This file contains both the Batch launcher and the PowerShell logic.
+:: It automatically bypasses execution policy and runs the audit.
+
+set "SCRIPT_PATH=%~f0"
+set "JSON_LOG=.\audit_results.json"
+set "TXT_LOG=.\audit_output.txt"
+
+:: Elevation check
+net session >nul 2>&1
+if %errorLevel% neq 0 (
+    echo [!] WARNING: Not running as Administrator. Some security checks will be skipped.
+)
+
+echo [+] Launching winAudit Standalone...
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "iex ([System.IO.File]::ReadAllText('%SCRIPT_PATH%'))" -- -OutLog "%TXT_LOG%" -ExportJson "%JSON_LOG%"
+
+echo [+] Audit complete. Results saved to:
+echo     - Text Log: %TXT_LOG%
+echo     - JSON Log: %JSON_LOG%
+pause
+exit /b %errorLevel%
+#>
 <#
 .SYNOPSIS
   Stable Windows audit script for Windows Server 2022+ (PowerShell)
