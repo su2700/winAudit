@@ -77,12 +77,18 @@ function Write-AuditWarning {
 
 function Write-AuditInfo {
     param([string]$Message)
-    Write-Host "[INFO] $Message" -ForegroundColor Gray
+    Write-Host "[INFO] $Message" -ForegroundColor Cyan
     Write-Output "[INFO] $Message"
 }
 function Header {
     param([string]$title)
     $sep = "=" * 80
+    Write-Host ""
+    Write-Host $sep -ForegroundColor Cyan
+    Write-Host ("== {0}" -f $title) -ForegroundColor Black -BackgroundColor Cyan
+    Write-Host $sep -ForegroundColor Cyan
+
+    # For transcript/log
     Write-Output ""
     Write-Output $sep
     Write-Output ("== {0}" -f $title)
