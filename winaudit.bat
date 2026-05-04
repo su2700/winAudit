@@ -12,15 +12,15 @@ set "TXT_LOG=.\audit_output.txt"
 :: Elevation check
 net session >nul 2>&1
 if %errorLevel% neq 0 (
-    echo [!] WARNING: Not running as Administrator. Some security checks will be skipped.
+    powershell -Command "Write-Host '⚠️ [!] WARNING: Not running as Administrator. Some security checks will be skipped.' -ForegroundColor Yellow"
 )
 
-echo [+] Launching winAudit Standalone...
+powershell -Command "Write-Host '🚀 [+] Launching winAudit Standalone...' -ForegroundColor Cyan"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "iex ([System.IO.File]::ReadAllText('%SCRIPT_PATH%'))" -- -OutLog "%TXT_LOG%" -ExportJson "%JSON_LOG%"
 
-echo [+] Audit complete. Results saved to:
-echo     - Text Log: %TXT_LOG%
-echo     - JSON Log: %JSON_LOG%
+powershell -Command "Write-Host '✅ [+] Audit complete. Results saved to:' -ForegroundColor Green"
+echo     - 📂 Text Log: %TXT_LOG%
+echo     - 📊 JSON Log: %JSON_LOG%
 pause
 exit /b %errorLevel%
 #>
@@ -87,32 +87,59 @@ try {
 }
 
 # ---------------------------
+# Global State for ADHD-friendly Summary
+# ---------------------------
+$Script:AlertCount = 0
+$Script:WarningCount = 0
+$Script:SummaryList = [System.Collections.Generic.List[string]]::new()
+$Script:CurrentStep = 0
+$Script:TotalSteps = 15 # Estimated total headers
+
+# ---------------------------
 # Helper functions
 # ---------------------------
 function Write-AuditAlert {
     param([string]$Message)
-    Write-Host "[ALERT] $Message" -ForegroundColor Red
+    $Script:AlertCount++
+    $Script:SummaryList.Add("🚨 ALERT: $Message")
+    Write-Host "  🚨 [ALERT] $Message" -ForegroundColor Red
     Write-Output "[ALERT] $Message"
 }
 
 function Write-AuditWarning {
     param([string]$Message)
-    Write-Host "[WARNING] $Message" -ForegroundColor Yellow
+    $Script:WarningCount++
+    $Script:SummaryList.Add("⚠️ WARNING: $Message")
+    Write-Host "  ⚠️ [WARNING] $Message" -ForegroundColor Yellow
     Write-Output "[WARNING] $Message"
 }
 
 function Write-AuditInfo {
     param([string]$Message)
-    Write-Host "[INFO] $Message" -ForegroundColor Gray
+    Write-Host "  🔍 [INFO] $Message" -ForegroundColor Cyan
     Write-Output "[INFO] $Message"
 }
+
+function Write-AuditSuccess {
+    param([string]$Message)
+    Write-Host "  ✅ [SUCCESS] $Message" -ForegroundColor Green
+    Write-Output "[SUCCESS] $Message"
+}
+
 function Header {
     param([string]$title)
-    $sep = "=" * 80
+    $Script:CurrentStep++
+    $sep = "═" * 80
+    Write-Host ""
+    Write-Host $sep -ForegroundColor Cyan
+    Write-Host ("  Step $($Script:CurrentStep)/$($Script:TotalSteps): {0}" -f $title.ToUpper()) -ForegroundColor White -BackgroundColor DarkCyan
+    Write-Host $sep -ForegroundColor Cyan
+
+    # For transcript/log
     Write-Output ""
-    Write-Output $sep
-    Write-Output ("== {0}" -f $title)
-    Write-Output $sep
+    Write-Output ("=" * 80)
+    Write-Output ("== Step $Script:CurrentStep: {0}" -f $title)
+    Write-Output ("=" * 80)
 }
 
 function RunCommand {
@@ -832,11 +859,29 @@ if ($ExportJson) {
     }
 }
 
+# ---------------------------
+# Wrap-up & Summary (ADHD-friendly)
+# ---------------------------
+Header "QUICK GLANCE SUMMARY"
+
+if ($Script:SummaryList.Count -gt 0) {
+    Write-Host "Found $($Script:AlertCount) alerts and $($Script:WarningCount) warnings:`n" -ForegroundColor Cyan
+    foreach ($item in $Script:SummaryList) {
+        if ($item -match "🚨") { Write-Host "  $item" -ForegroundColor Red }
+        elseif ($item -match "⚠️") { Write-Host "  $item" -ForegroundColor Yellow }
+        else { Write-Host "  $item" }
+    }
+} else {
+    Write-AuditSuccess "Clean run! No obvious security alerts or warnings found."
+}
+
 try {
     if (Get-Command Stop-Transcript -ErrorAction SilentlyContinue) { Stop-Transcript | Out-Null }
 } catch { Write-Warning ("Could not stop transcript cleanly: {0}" -f $_) }
 
 Write-Output ""
-Write-Output ("Audit complete. Primary log: {0}" -f $OutLog)
-Write-Output ("Scheduled tasks file: {0}" -f $SchtasksFile)
-if ($ExportJson) { Write-Output ("JSON export: {0}" -f $ExportJson) }
+Write-AuditSuccess "Audit complete."
+Write-Host ("  📂 Primary log: {0}" -f $OutLog) -ForegroundColor Gray
+Write-Host ("  📝 Scheduled tasks: {0}" -f $SchtasksFile) -ForegroundColor Gray
+if ($ExportJson) { Write-Host ("  📊 JSON export: {0}" -f $ExportJson) -ForegroundColor Gray }
+
